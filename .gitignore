@@ -1,0 +1,14 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+
+# Quarto
+/.quarto/
+**/*.quarto_ipynb
+
+# Course materials (instructor's example and lab instructions).
+# Delete these lines if you want them in the repository.
+example/
+/*.pdf

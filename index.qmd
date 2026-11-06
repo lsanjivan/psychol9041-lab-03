@@ -1,0 +1,514 @@
+---
+title: "Lab 3: Linear Regression — Model Specification, Comparison, and Interpretation"
+subtitle: "Which employee attitudes predict how departments rate their workplace?"
+author: "Sanjivan"
+date: today
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Overview
+
+This report investigates which aspects of the workplace are associated with employees' overall ratings of their department by evaluating four models and interpreting the best one.
+
+## Part 1: Load packages and prepare the data
+
+Install packages required for analysis
+
+```r
+# Console
+install.packages(c("dplyr", "tidyr", "ggplot2", "broom", "performance", "see", "gt"))
+```
+
+```{r}
+#| label: setup
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(performance)
+library(gt)
+```
+
+### 1.3 The dataset
+
+```{r}
+#| label: load-data
+
+# Keep the same complete-case sample for every model
+dat <- attitude |>
+  select(rating, complaints, learning, raises) |>
+  drop_na()
+
+n <- nrow(dat)
+```
+
+The built-in `attitude` dataset comes from a survey of employees in a financial organization. Responses from approximately 35 employees in each of 30 randomly selected departments were aggregated, so each value is the **percentage of favourable responses** to a survey question within a department. The observations are therefore **departments, not individual employees**. Because every variable is a percentage, the regression coefficients and RMSE values below are all in percentage points.
+
+| Variable | Description | Role |
+|:--|:--|:--|
+| `rating` | Overall rating | Outcome |
+| `complaints` | Handling of employee complaints | Predictor |
+| `learning` | Opportunity to learn | Predictor |
+| `raises` | Raises based on performance (pay increases) | Predictor |
+
+There are no missing values, so every model below is estimated on the same 30 departments.
+
+### 1.4 Exploring the data
+
+
+```r
+# Console
+head(dat)
+str(dat)
+summary(dat)
+hist(dat$rating)
+pairs(dat)
+cor(dat)
+```
+
+#### Descriptive statistics
+
+```{r}
+#| label: tbl-descriptives
+#| tbl-cap: "Descriptive statistics for the analysis variables (percentage of favourable responses)"
+
+descriptives <- dat |>
+  summarise(
+    across(
+      c(rating, complaints, learning, raises),
+      list(mean = mean, sd = sd, min = min, max = max)
+    )
+  ) |>
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_sep = "_"
+  )
+
+descriptives |>
+  gt() |>
+  fmt_number(columns = where(is.numeric), decimals = 2)
+```
+
+#### Distribution of overall ratings
+
+```{r}
+#| label: fig-rating-distribution
+#| fig-cap: "Distribution of overall ratings across departments"
+
+ggplot(dat, aes(x = rating)) +
+  geom_histogram(
+    aes(y = after_stat(density)),
+    bins = 10,
+    fill = "#669BBC",
+    color = "white",
+    alpha = 0.8
+  ) +
+  geom_density(
+    linewidth = 0.9,
+    color = "#9A3038"
+  ) +
+  labs(
+    x = "Overall rating (% favourable responses)",
+    y = "Density"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+#### Relationships between overall rating and the predictors
+
+```{r}
+#| label: fig-complaints-scatterplot
+#| fig-cap: "Relationship between complaint handling and overall rating"
+
+ggplot(dat, aes(x = complaints, y = rating)) +
+  geom_point(alpha = 0.75) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "#27638A"
+  ) +
+  labs(
+    x = "Handling of employee complaints (% favourable)",
+    y = "Overall rating (% favourable)"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r}
+#| label: fig-learning-scatterplot
+#| fig-cap: "Relationship between opportunity to learn and overall rating"
+
+ggplot(dat, aes(x = learning, y = rating)) +
+  geom_point(alpha = 0.75) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "#27638A"
+  ) +
+  labs(
+    x = "Opportunity to learn (% favourable)",
+    y = "Overall rating (% favourable)"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+```{r}
+#| label: fig-raises-scatterplot
+#| fig-cap: "Relationship between raises and overall rating"
+
+ggplot(dat, aes(x = raises, y = rating)) +
+  geom_point(alpha = 0.75) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "#27638A"
+  ) +
+  labs(
+    x = "Raises based on performance (% favourable)",
+    y = "Overall rating (% favourable)"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+#### Results of exploration
+
+Overall ratings averaged 64.63% favourable (*SD* = 12.17) and ranged from 40 to 85 (@tbl-descriptives). The distribution (@fig-rating-distribution) is centred in the mid-60s with a longer lower tail: a small group of departments rated their workplace much less favourably than the rest. This mild skew is not a problem in itself, because regression assumes normally distributed residuals rather than a normal outcome.
+
+All three predictors are positively related to overall rating, and the relationships look approximately linear, with no obvious curvature. Complaint handling has by far the strongest association (*r* = 0.83), and the points cluster tightly around the line. Learning (*r*=0.62) and raises (*r*=0.59) show moderate associations with more scatter.
+
+A few departments stand out. The department with the lowest overall rating (40) has only an average learning score, and the department with the highest raises score (88) has only an average overall rating. Neither looks like a data error, but with only 30 departments a single unusual department could influence the fitted models, so I checked for influential observations in Part 4.
+
+The exploratory results are predictable. The associations are positive and complaint handling is the strongest. The predictors are also correlated with one another (e.g., *r* = 0.6) between complaints and learning, and *r* = 0.67 between complaints and raises). Much of what learning and raises tell us about ratings may therefore already be captured by complaint handling.
+
+## Part 2: Competing regression models
+
+### 2.1 Predictions
+
+**Complaint handling.** How a department deals with employee complaints tells us about whether employees feel heard and are treated fairly. Research shows that perceptions of fairness and respectful treatment are strongly related to job satisfaction and overall evaluations of the workplace. I therefore expect complaint handling to show the strongest positive association with overall ratings.
+
+**Learning opportunities.** Opportunities to learn and grow reflect a different aspect of work, namely development, rather than how grievances are handled. They show that can employee can better themselves and boost morale. A department could resolve complaints well yet offer little chance to develop new skills such that employees feel stagnant in their position with no hope for the future. Thus, learning could explain additional variation beyond complaint handling. As both partly reflect the quality of management, its unique contribution may be modest.
+
+**Pay increases.** Employees should also value raises based on performance, and pay is an extrinsic reward that can reflect that. Learning opportunities may develop into handling of greater responsibility and therefore increase pay. Managements that support learning opportunities are also likely to handle complaints well. Therefore, pay increases, learning opportunities and complaint handling may all reflect an underlying factor of management quality. However, complaint handling may be the most powerful driver of these ratings as the odd one out and more serious of the three predictors. 
+
+These predictions motivate a hierarchical sequence that adds the predictors in order of their expected importance: complaints first, then learning, then raises.
+
+### 2.2 Four nested models
+
+| Model | Formula | Purpose |
+|:--|:--|:--|
+| M0: Null | `rating ~ 1` | Baseline: predicts the mean rating for every department |
+| M1: Complaints | `rating ~ complaints` | Evaluate complaint handling |
+| M2: + Learning | `rating ~ complaints + learning` | Evaluate the additional contribution of learning |
+| M3: + Raises | `rating ~ complaints + learning + raises` | Evaluate the additional contribution of pay increases |
+
+The models are nested: each one contains all the predictors of the model before it, plus one more.
+
+```{r}
+#| label: fit-models
+
+m0 <- lm(rating ~ 1, data = dat)
+
+m1 <- lm(rating ~ complaints, data = dat)
+
+m2 <- lm(rating ~ complaints + learning, data = dat)
+
+m3 <- lm(rating ~ complaints + learning + raises, data = dat)
+```
+
+### 2.3 How the complaints coefficient changes across models
+
+```r
+# Console
+summary(m0)
+summary(m1)
+summary(m2)
+summary(m3)
+```
+
+- **M1:** the complaints coefficient *b* = 0.75 is the *unadjusted* association. Departments whose employees rate complaint handling one percentage point more favourably have overall ratings about 0.75 points higher on average, with nothing else taken into account.
+- **M2:** the coefficient falls to *b* = 0.64. It is now a *partial* association: the expected difference in overall rating between departments that have the same learning score but differ by one point in complaint handling. It shrinks because complaints and learning are correlated, so part of what M1 attributed to complaint handling is shared with learning opportunities.
+- **M3:** holding both learning and raises constant, the coefficient barely changes (*b* = 0.65), so raises accounts for none of the complaints association. Raises' own coefficient is close to zero (*b* = -0.03) despite its positive correlation with rating, which suggests that its association with rating is shared with the other two predictors.
+
+In every model, the complaints coefficient remains large and positive.
+
+## Part 3: Model comparison
+
+### 3.1 Nested-model F-tests
+
+```{r}
+#| label: nested-tests
+
+tests <- anova(m0, m1, m2, m3)
+
+tests
+```
+
+Each row after the first tests whether that model improves fit relative to the model before it. Because all four models are compared in a single `anova()` call, every F-test uses the residual variance of the largest model (M3) as its denominator.
+
+```{r}
+#| label: prepare-nested-tests
+
+tests <- tests |>
+  select(Res.Df, Df, F, `Pr(>F)`) |>
+  rename(
+    Residual.df = Res.Df,
+    Nested.Df = Df,
+    Nested.F.stat = F,
+    Nested.p.value = `Pr(>F)`
+  )
+```
+
+1. **Does complaint handling explain significantly more variation than the intercept-only model?** Yes: *F*(`{r} tests$Nested.Df[2]`, `{r} tests$Residual.df[4]`) = `{r} round(tests$Nested.F.stat[2], 2)`, *p* < .001.
+2. **Does adding learning improve fit beyond complaint handling?** No: *F*(`{r} tests$Nested.Df[3]`, `{r} tests$Residual.df[4]`) = `{r} round(tests$Nested.F.stat[3], 2)`, *p* = `{r} round(tests$Nested.p.value[3], 3)`.
+3. **Does adding raises improve fit beyond complaints and learning?** No: *F*(`{r} tests$Nested.Df[4]`, `{r} tests$Residual.df[4]`) = `{r} round(tests$Nested.F.stat[4], 2)`, *p* = `{r} round(tests$Nested.p.value[4], 3)`.
+
+### 3.2 Model-level performance
+
+`glance()` returns a one-row data frame of model-level statistics. I apply it to each model, combine the rows with `rbind()`, and add a model identifier and the RMSE.
+
+```{r}
+#| label: model-performance
+
+glance0 <- glance(m0)
+glance1 <- glance(m1)
+glance2 <- glance(m2)
+glance3 <- glance(m3)
+
+model_performance <- rbind(glance0, glance1, glance2, glance3) |>
+  mutate(
+    Model = c("M0: Null", "M1: Complaints", "M2: + Learning", "M3: + Raises"),
+    RMSE = c(
+      sqrt(mean(residuals(m0)^2)),
+      sqrt(mean(residuals(m1)^2)),
+      sqrt(mean(residuals(m2)^2)),
+      sqrt(mean(residuals(m3)^2))
+    )
+  ) |>
+  select(Model, r.squared, adj.r.squared, RMSE)
+```
+
+I calculate RMSE directly from the residuals because the `sigma` value from `glance()` is the residual standard error, which uses a different denominator (residual degrees of freedom rather than *n*).
+
+### 3.3 Change in explained variance
+
+```{r}
+#| label: delta-r2
+
+model_performance <- model_performance |>
+  mutate(Delta.R2 = r.squared - lag(r.squared))
+```
+
+### 3.4 Combined model-comparison table
+
+The rows of `model_performance` and `tests` describe the same four models in the same order, so they can be combined with `cbind()`.
+
+```{r}
+#| label: combine-comparisons
+
+comparison_table <- cbind(model_performance, tests)
+```
+
+```{r}
+#| label: tbl-model-comparison
+#| tbl-cap: "Overall model performance and incremental nested-model comparisons"
+
+comparison_table |>
+  gt() |>
+  cols_label(
+    Model = "Model",
+    r.squared = "R²",
+    adj.r.squared = "Adjusted R²",
+    RMSE = "RMSE",
+    Delta.R2 = "ΔR²",
+    Residual.df = "Residual df",
+    Nested.Df = "Nested df",
+    Nested.F.stat = "Nested F",
+    Nested.p.value = "Nested p"
+  ) |>
+  tab_spanner(
+    label = "Overall model performance",
+    columns = c(r.squared, adj.r.squared, RMSE)
+  ) |>
+  tab_spanner(
+    label = "Incremental improvement over the preceding model",
+    columns = c(Delta.R2, Residual.df, Nested.Df, Nested.F.stat, Nested.p.value)
+  ) |>
+  fmt_number(columns = c(r.squared, adj.r.squared, Delta.R2), decimals = 3) |>
+  fmt_number(columns = c(RMSE, Nested.F.stat), decimals = 2) |>
+  fmt(
+    columns = Nested.p.value,
+    fns = function(x) {
+      ifelse(
+        is.na(x),
+        "—",
+        ifelse(x < .001, "< .001", sprintf("%.3f", x))
+      )
+    }
+  ) |>
+  sub_missing(
+    columns = c(Delta.R2, Nested.Df, Nested.F.stat),
+    missing_text = "—"
+  )
+```
+
+### 3.5 Interpreting the comparisons
+
+**Which model explains the most variation?** M3 has the largest R² (`{r} round(comparison_table$r.squared[4], 3)`), but only because R² can never decrease when a predictor is added; it is essentially the same as M2's (`{r} round(comparison_table$r.squared[3], 3)`). Almost all of the explained variation comes from the first step: complaint handling alone accounts for `{r} round(100 * comparison_table$r.squared[2], 1)`% of the variance in overall ratings.
+
+**How does adjusted R² change?** Adjusted R² rises from `{r} round(comparison_table$adj.r.squared[2], 3)` in M1 to `{r} round(comparison_table$adj.r.squared[3], 3)` in M2, then falls to `{r} round(comparison_table$adj.r.squared[4], 3)` in M3. The fall at M3 means that raises does not contribute enough to justify an extra parameter. The small rise at M2 means learning adds a little information, but not much.
+
+**How much additional variation does each model explain?** Complaint handling explains ΔR² = `{r} round(comparison_table$Delta.R2[2], 3)` over the null model. Learning adds a further `{r} round(comparison_table$Delta.R2[3], 3)`, and raises adds essentially nothing (ΔR² < .001).
+
+**Which additions significantly improve fit?** Only complaint handling (*p* < .001). Neither learning (*p* = `{r} round(comparison_table$Nested.p.value[3], 3)`) nor raises (*p* = `{r} round(comparison_table$Nested.p.value[4], 3)`) produces a statistically significant improvement.
+
+**Are the reductions in RMSE meaningful?** Predicting the mean for every department (M0) gives an RMSE of `{r} round(comparison_table$RMSE[1], 2)` percentage points. Complaint handling reduces this to `{r} round(comparison_table$RMSE[2], 2)`, a large and meaningful improvement on a 0–100 scale. Adding learning (`{r} round(comparison_table$RMSE[3], 2)`) and then raises (`{r} round(comparison_table$RMSE[4], 2)`) reduces it by only fractions of a point, which is not substantively meaningful.
+
+**What the pattern says about each predictor.** Complaint handling carries almost all of the predictive information. Learning and raises are moderately related to ratings on their own, but they overlap so much with complaint handling that, once complaint handling is known, they add little. Learning may have a small unique association (adjusted R² slightly favours M2), but with only `{r} n` departments it cannot be distinguished from chance. Raises shows no unique association at all. M1 is therefore the most promising model to carry forward, with M2 as its main competitor.
+
+## Part 4: Regression diagnostics
+
+Based on Part 3, I examine the assumptions of **M1** (complaints only), the most promising model.
+
+### 4.1 Diagnostic plots and checks
+
+```{r}
+#| label: fig-diagnostics
+#| fig-cap: "Regression diagnostic plots for M1"
+#| fig-width: 9
+#| fig-height: 8
+
+op <- par(mfrow = c(2, 2))
+
+plot(m1)
+
+par(op)
+```
+
+```{r}
+#| label: assumption-checks
+
+check_normality(m1)
+check_heteroscedasticity(m1)
+
+# Multicollinearity needs two or more predictors, so check the expanded model
+check_collinearity(m3)
+```
+
+### 4.2 Diagnostic findings
+
+**Linearity.** The residuals-versus-fitted plot shows no systematic curvature: the red line stays close to zero across the range of fitted values, consistent with the straight-line pattern in @fig-complaints-scatterplot.
+
+**Homoscedasticity.** The spread of the residuals is roughly constant across fitted values (scale–location plot), and `check_heteroscedasticity()` finds no evidence of non-constant variance.
+
+**Normality.** This is the one assumption that is not cleanly met. The Q–Q plot shows a short upper tail, and a few departments (6, 23 and 1 in the plots) are rated noticeably lower than their complaint-handling scores predict. `check_normality()` flags this departure. However, it is mild: no residual is extreme, and the complaints coefficient is so far from zero that some inaccuracy in its standard error would not change the conclusion.
+
+**Influential observations.** No department falls near the contours in the residuals-versus-leverage plot. The point with the highest leverage is the department with the lowest complaint-handling score, but it lies close to the regression line, so it anchors the fit rather than distorting it.
+
+**Multicollinearity.** With a single predictor, collinearity cannot affect M1. In the expanded model, the variance inflation factors from `check_collinearity()` are low, so the small unique contributions of learning and raises reflect shared variance rather than an estimation problem.
+
+**What this means for the findings.** The diagnostics support using M1. A straight-line, constant-variance model describes the data well, and no single department drives the results. The mild non-normality means the exact *p*-values and confidence limits should be treated as approximate in a sample of `{r} n`, but it does not threaten the conclusion that complaint handling is strongly associated with overall ratings.
+
+## Part 5: The preferred model
+
+### 5.1 Model selection
+
+```{r}
+#| label: select-model
+
+selected_model <- m1
+
+selected_row <- comparison_table |>
+  filter(Model == "M1: Complaints")
+```
+
+I select **M1 (complaints only)** as the most defensible model.
+
+M3 is easy to rule out: adding raises explains no additional variance, adjusted R² falls, and the raises coefficient is essentially zero.
+
+The real choice is between M1 and M2. M2 has a slightly higher adjusted R² (`{r} round(comparison_table$adj.r.squared[3], 3)` vs. `{r} round(comparison_table$adj.r.squared[2], 3)`) and a slightly lower RMSE (`{r} round(comparison_table$RMSE[3], 2)` vs. `{r} round(comparison_table$RMSE[2], 2)`). Several considerations nonetheless favour M1:
+
+- **Nested F-test:** adding learning does not significantly improve fit (*p* = `{r} round(comparison_table$Nested.p.value[3], 3)`).
+- **ΔR² and RMSE:** learning explains only `{r} round(100 * comparison_table$Delta.R2[3], 1)`% more of the variance and reduces RMSE by less than a third of a percentage point.
+- **Precision:** learning's coefficient in M2 is imprecise. Its 95% CI [`{r} round(confint(m2)["learning", 1], 2)`, `{r} round(confint(m2)["learning", 2], 2)`] includes zero as well as sizeable positive values.
+- **Complexity:** with only `{r} n` departments, small in-sample gains in adjusted R² are likely to shrink in new data, so the simpler model is preferable.
+- **Diagnostics:** M1's assumptions are reasonably satisfied, and its mild non-normality does not affect the conclusions.
+
+M1 is simpler, and its single coefficient is precisely estimated and easy to interpret. A larger sample might show that learning has a small unique association, but these data do not provide convincing evidence for it.
+
+### 5.2 Coefficient table
+
+```{r}
+#| label: extract-coefficients
+
+coefficient_results <- tidy(
+  selected_model,
+  conf.int = TRUE,
+  conf.level = 0.95
+)
+```
+
+```{r}
+#| label: tbl-coefficients
+#| tbl-cap: "Unstandardized regression coefficients for the selected model (M1)"
+
+coefficient_results |>
+  select(term, estimate, std.error, conf.low, conf.high, p.value) |>
+  gt() |>
+  cols_label(
+    term = "Predictor",
+    estimate = "Estimate",
+    std.error = "SE",
+    conf.low = "95% CI lower",
+    conf.high = "95% CI upper",
+    p.value = "p"
+  ) |>
+  fmt_number(
+    columns = c(estimate, std.error, conf.low, conf.high),
+    decimals = 2
+  ) |>
+  fmt(
+    columns = p.value,
+    fns = function(x) ifelse(x < .001, "< .001", sprintf("%.3f", x))
+  )
+```
+
+### 5.3 Interpreting the coefficients
+
+**Handling of employee complaints.** The association is positive: departments in which more employees view complaint handling favourably also give more favourable overall ratings. Each additional percentage point of favourable responses about complaint handling is associated with a 0.75-point increase in the predicted overall rating, 95% CI [`{r} round(coefficient_results |> filter(term == "complaints") |> pull(conf.low), 2)`, `{r} round(coefficient_results |> filter(term == "complaints") |> pull(conf.high), 2)`]. In other words, two departments 10 points apart in complaint handling are expected to differ by about `{r} round(10 * coefficient_results |> filter(term == "complaints") |> pull(estimate), 1)` points in overall rating.
+
+Because M1 contains only one predictor, nothing is held constant. This is the unadjusted association, and it partly reflects other characteristics that go along with good complaint handling; when learning is controlled (M2), the coefficient falls to `{r} round(coef(m2)["complaints"], 2)`.
+
+The confidence interval shows that the data are compatible with a slope anywhere from about half a point to almost a full point of overall rating per point of complaint handling. The exact size of the association is uncertain, but even the lower limit represents a substantial association, and the interval clearly excludes zero.
+
+Intercept. The intercept (14.38) is the predicted overall rating for a department in which no employee responded favourably about complaint handling. The lowest observed complaints score is 37, so this is an extrapolation far outside the data with no substantive meaning; it simply positions the regression line.
+
+### 5.4 Model performance
+
+M1 explains `{r} round(100 * selected_row$r.squared, 1)`% of the variance in overall ratings across departments (R² = `{r} round(selected_row$r.squared, 3)`). In other words, knowing how favourably employees view complaint handling accounts for about two-thirds of the differences between departments in how favourably they rate their workplace overall. Adjusted R² (`{r} round(selected_row$adj.r.squared, 3)`) is only slightly lower, so the estimate is not inflated by model complexity.
+
+The RMSE is `{r} round(selected_row$RMSE, 2)` percentage points: the model's prediction of a department's overall rating typically misses by about `{r} round(selected_row$RMSE)` points, compared with `{r} round(comparison_table$RMSE[1], 2)` points when the mean is predicted for every department. Because it is computed on the same data used to fit the model, it probably understates the error we would see for new departments.
+
+## Part 6: Discussion and limitations
+
+**The relative importance of the three predictors.** The results point clearly to complaint handling as the workplace attitude most closely tied to overall ratings. On its own it accounts for `{r} round(100 * selected_row$r.squared)`% of the variation between departments. It remains strong when the other predictors are controlled, and it is the only predictor whose addition significantly improved model fit.
+
+**Learning opportunities** and **pay raises** are each moderately associated with overall ratings when considered alone; their correlations with rating correspond to `{r} round(100 * cor(dat$rating, dat$learning)^2)`% and `{r} round(100 * cor(dat$rating, dat$raises)^2)`% of the variance. Almost all of that association, however, is shared with complaint handling. Once complaint handling is known, learning explains only about `{r} round(100 * comparison_table$Delta.R2[3])`% more of the variance (not significant), and raises explains essentially none.
+
+One plausible interpretation is that all three attitudes reflect a common underlying evaluation of how well a department is managed, and complaint handling is its most direct and visible indicator. This would fit the prediction that how employees are treated matters more than pay. It is not evidence that pay is unimportant to employees, though. The raises variable was entered last, the most conservative position in the sequence. The results show only that raises carries little information about overall ratings beyond what complaint handling and learning already provide.
+
+**Limitations.**
+
+- **Small sample.** With `{r} n` departments, the analysis has little power to detect small incremental effects. The non-significant contribution of learning is better described as "not demonstrated" than as "absent".
+- **Department-level data.** Each score aggregates the responses of roughly 35 employees, so the results describe differences *between departments*. Concluding that individual employees who view complaint handling favourably also rate their workplace more highly would risk the ecological fallacy.
+- **Shared method and halo effects.** All four variables come from the same questionnaire completed by the same employees. A general positive or negative attitude toward the workplace could inflate the correlations among all the items, so part of the strong complaints–rating association may reflect common method variance rather than complaint handling itself.
+- **Observational, cross-sectional design.** The coefficients describe associations, not causal effects. Better complaint handling might raise overall ratings. Alternatively, generally satisfied departments might judge complaint handling more favourably, or both might reflect the quality of management.
+- **Omitted variables.** Only three of the six attitude measures in the dataset were analysed. Because M1 has a single predictor, its coefficient also absorbs the association of any correlated department characteristic that was left out, as the drop from `{r} round(coef(m1)["complaints"], 2)` to `{r} round(coef(m2)["complaints"], 2)` when learning is added illustrates.
+- **In-sample performance and generalizability.** R² and RMSE are computed on the data used to fit the models and are likely optimistic for new departments. The data also come from clerical staff in a single financial organization and were published in 1977, which limits how far the findings generalize to other workplaces today.
+- **Mild non-normality.** As noted in Part 4, the *p*-values and confidence limits for M1 are approximate.
+
+**Conclusion.** Among the three workplace attitudes examined, the handling of employee complaints is by far the strongest predictor of how favourably a department rates its workplace overall. Opportunities to learn and performance-based raises add little once complaint handling is known. A simple one-predictor model therefore provides the most defensible account of these data, although larger samples, individual-level data and longitudinal designs would be needed to test whether learning makes a small unique contribution and whether improving complaint handling actually improves workplace ratings.
