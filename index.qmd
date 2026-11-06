@@ -269,7 +269,7 @@ tests <- tests |>
 
 ### 3.2 Model-level performance
 
-`glance()` returns a one-row data frame of model-level statistics. I apply it to each model, combine the rows with `rbind()`, and add a model identifier and the RMSE.
+`glance()` returns a one-row data frame of model-level statistics. 
 
 ```{r}
 #| label: model-performance
@@ -292,7 +292,7 @@ model_performance <- rbind(glance0, glance1, glance2, glance3) |>
   select(Model, r.squared, adj.r.squared, RMSE)
 ```
 
-I calculate RMSE directly from the residuals because the `sigma` value from `glance()` is the residual standard error, which uses a different denominator (residual degrees of freedom rather than *n*).
+
 
 ### 3.3 Change in explained variance
 
@@ -305,7 +305,6 @@ model_performance <- model_performance |>
 
 ### 3.4 Combined model-comparison table
 
-The rows of `model_performance` and `tests` describe the same four models in the same order, so they can be combined with `cbind()`.
 
 ```{r}
 #| label: combine-comparisons
@@ -371,8 +370,6 @@ comparison_table |>
 **What the pattern says about each predictor.** Complaint handling carries almost all of the predictive information. Learning and raises are moderately related to ratings on their own, but they overlap so much with complaint handling that, once complaint handling is known, they add little. Learning may have a small unique association (adjusted R² slightly favours M2), but with only `{r} n` departments it cannot be distinguished from chance. Raises shows no unique association at all. M1 is therefore the most promising model to carry forward, with M2 as its main competitor.
 
 ## Part 4: Regression diagnostics
-
-Based on Part 3, I examine the assumptions of **M1** (complaints only), the most promising model.
 
 ### 4.1 Diagnostic plots and checks
 
